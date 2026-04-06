@@ -26,19 +26,42 @@ def load_common_voice_arabic(
     streaming: bool = False,
 ) -> object:
     """
-    Load Mozilla Common Voice Arabic dataset from HuggingFace.
-    split: 'train', 'validation', or 'test'
-    """
-    print(f"Loading Mozilla Common Voice Arabic ({split} split)...")
-    dataset = load_dataset(
-        "mozilla-foundation/common_voice_13_0",
-        "ar",
-        split=split,
-        streaming=streaming,
-        trust_remote_code=True,
-    )
+    Load Arabic speech dataset from HuggingFace.
 
-    # Cast audio column to 16kHz
+    Primary:  Mozilla Common Voice Arabic (requires: huggingface-cli login)
+    Fallback: Google FLEURS Arabic (ar_eg) — no authentication required
+
+    To use Common Voice, run once:
+        huggingface-cli login
+    then set USE_COMMON_VOICE=1 in your environment.
+    """
+    import os
+
+    use_cv = os.environ.get("USE_COMMON_VOICE", "0") == "1"
+
+    if use_cv:
+        print(f"Loading Mozilla Common Voice Arabic ({split} split)...")
+        dataset = load_dataset(
+            "mozilla-foundation/common_voice_17_0",
+            "ar",
+            split=split,
+            streaming=streaming,
+        )
+    else:
+        # Google FLEURS Arabic — freely accessible, no auth required
+        # split mapping: train/validation/test all exist in FLEURS
+        print(f"Loading Google FLEURS Arabic ({split} split)...")
+        dataset = load_dataset(
+            "google/fleurs",
+            "ar_eg",          # Egyptian Arabic
+            split=split,
+            streaming=streaming,
+        )
+        # FLEURS uses 'transcription' column; rename to 'sentence' for consistency
+        if not streaming:
+            dataset = dataset.rename_column("transcription", "sentence")
+
+    # Cast audio to 16 kHz
     if not streaming:
         dataset = dataset.cast_column("audio", Audio(sampling_rate=TARGET_SAMPLE_RATE))
         if max_samples:

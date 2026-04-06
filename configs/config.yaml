@@ -4,7 +4,7 @@ project:
   language: "ar"
 
 data:
-  dataset_name: "mozilla-foundation/common_voice_13_0"
+  dataset_name: "mozilla-foundation/common_voice_17_0"
   language_code: "ar"
   sample_rate: 16000
   max_duration: 30  # seconds
