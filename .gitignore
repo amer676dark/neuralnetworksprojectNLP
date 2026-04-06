@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
+
+# outputs (large files)
+outputs/checkpoints/
+outputs/logs/
+
+# data (downloaded on demand)
+data/raw/
+data/processed/
+
+# notebooks checkpoints
+notebooks/.ipynb_checkpoints/
+
+# model cache
+.cache/
