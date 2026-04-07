@@ -4,17 +4,20 @@ project:
   language: "ar"
 
 data:
-  dataset_name: "mozilla-foundation/common_voice_17_0"
-  language_code: "ar"
+  # Source: "common_voice" | "masc" | "arabic_speech_corpus" | "ejust" | "combined"
+  source: "common_voice"
+  # For local datasets (arabic_speech_corpus, ejust) — set the folder path
+  data_dir: null
+  # HuggingFace token — required for Common Voice (or set HF_TOKEN env var)
+  hf_token: null
+  # Which sources to mix if source = "combined"
+  combine_sources: ["common_voice", "masc"]
+
   sample_rate: 16000
-  max_duration: 30  # seconds
-  train_split: "train"
-  validation_split: "validation"
-  test_split: "test"
-  data_dir: "./data/raw"
-  processed_dir: "./data/processed"
-  max_train_samples: 5000   # set null for full dataset
+  max_duration: 10       # seconds — clips longer than this are skipped
+  max_train_samples: 5000
   max_eval_samples: 500
+  processed_dir: "./data/processed"
 
 audio:
   sample_rate: 16000
@@ -24,31 +27,34 @@ audio:
   win_length: 400
   f_min: 0
   f_max: 8000
-  max_audio_length: 30  # seconds
+  max_audio_length: 10
 
 cnn_lstm:
-  # CNN encoder
+  # CNN
   cnn_channels: [32, 64, 128]
   cnn_kernel_size: 3
-  cnn_dropout: 0.2
-  # LSTM decoder
+  cnn_dropout: 0.15
+  # LSTM
   lstm_hidden_size: 512
   lstm_num_layers: 3
   lstm_dropout: 0.3
-  bidirectional: true
+  # Attention
+  attention_heads: 8
+  # SpecAugment
+  spec_augment: true
   # Training
   batch_size: 16
   learning_rate: 0.0003
   num_epochs: 50
-  warmup_steps: 1000
   gradient_clip: 5.0
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
 
 whisper:
-  model_size: "medium"  # tiny, base, small, medium, large-v2, large-v3
+  model_size: "medium"    # tiny | base | small | medium | large-v2 | large-v3
   language: "ar"
   task: "transcribe"
-  device: "auto"  # auto, cpu, cuda, mps
+  device: "auto"
+  beam_size: 5
 
 wav2vec:
   model_name: "facebook/wav2vec2-large-xlsr-53-arabic"
@@ -63,9 +69,8 @@ evaluation:
   metrics: ["wer", "cer"]
   results_dir: "./outputs/results"
   log_dir: "./outputs/logs"
+  num_test_samples: 200
 
 demo:
-  server_name: "0.0.0.0"
   server_port: 7860
   share: false
-  title: "Arabic Speech Recognition System"

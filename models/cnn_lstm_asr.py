@@ -1,199 +1,252 @@
 """
-CNN + LSTM Arabic ASR Model with CTC loss.
+Advanced CNN + BiLSTM + Multi-Head Attention Arabic ASR Model with CTC loss.
 
 Architecture:
   Input: Log-Mel Spectrogram (B, 1, n_mels, T)
-  → CNN Encoder: extract local spectro-temporal features
-  → Reshape: (B, T', C) sequence for LSTM
-  → Bidirectional LSTM: capture long-range temporal dependencies
-  → Linear projection → CTC output (B, T', vocab_size)
+  → SpecAugment (frequency + time masking, training only)
+  → Residual CNN Encoder (3 blocks, 32→64→128 channels)
+  → Linear projection (1280 → 512)
+  → Bidirectional LSTM × 3 (hidden=512)
+  → Multi-Head Self-Attention (8 heads)
+  → Linear → log-softmax → CTC
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Optional
+import torchaudio.transforms as T
+from typing import Tuple, Optional, List
 
 
-class ConvBlock(nn.Module):
-    """Conv2d → BatchNorm → ReLU → MaxPool block."""
+# ── SpecAugment ────────────────────────────────────────────────────────────────
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        dropout: float = 0.2,
-    ):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size, padding=kernel_size // 2),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_channels, out_channels, kernel_size, padding=kernel_size // 2),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=(2, 1)),  # halve frequency axis, keep time
-            nn.Dropout2d(dropout),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.block(x)
-
-
-class CNNEncoder(nn.Module):
+class SpecAugment(nn.Module):
     """
-    Stack of ConvBlocks that compress the mel-frequency axis
-    while preserving the time axis for the LSTM.
+    SpecAugment: frequency and time masking.
+    Applied only during training (self.training guard).
+    Park et al. (2019) — standard for all modern ASR systems.
     """
-
-    def __init__(
-        self,
-        in_channels: int = 1,
-        cnn_channels: Tuple[int, ...] = (32, 64, 128),
-        kernel_size: int = 3,
-        dropout: float = 0.2,
-    ):
+    def __init__(self, freq_mask_param: int = 27, time_mask_param: int = 100,
+                 n_freq_masks: int = 2, n_time_masks: int = 2):
         super().__init__()
-        channels = [in_channels] + list(cnn_channels)
-        self.blocks = nn.ModuleList([
-            ConvBlock(channels[i], channels[i + 1], kernel_size, dropout)
-            for i in range(len(cnn_channels))
+        self.freq_masks = nn.ModuleList([
+            T.FrequencyMasking(freq_mask_param=freq_mask_param)
+            for _ in range(n_freq_masks)
+        ])
+        self.time_masks = nn.ModuleList([
+            T.TimeMasking(time_mask_param=time_mask_param)
+            for _ in range(n_time_masks)
         ])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, 1, n_mels, T) → (B, C, n_mels', T)"""
-        for block in self.blocks:
-            x = block(x)
+        """x: (B, 1, n_mels, T)"""
+        if not self.training:
+            return x
+        for mask in self.freq_masks:
+            x = mask(x.squeeze(1)).unsqueeze(1)
+        for mask in self.time_masks:
+            x = mask(x.squeeze(1)).unsqueeze(1)
         return x
 
 
-class BidirectionalLSTM(nn.Module):
-    """Bidirectional LSTM with residual connection (if sizes match)."""
+# ── Residual CNN Block ─────────────────────────────────────────────────────────
 
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        num_layers: int = 3,
-        dropout: float = 0.3,
-    ):
+class ResidualConvBlock(nn.Module):
+    """
+    Two-layer Conv2d block with 1×1 projection shortcut (residual).
+    Uses GELU activation and frequency-axis max pooling.
+    """
+    def __init__(self, in_channels: int, out_channels: int,
+                 kernel_size: int = 3, dropout: float = 0.15):
         super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True,
+        pad = kernel_size // 2
+
+        self.conv_path = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size, padding=pad),
+            nn.BatchNorm2d(out_channels),
+            nn.GELU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size, padding=pad),
+            nn.BatchNorm2d(out_channels),
         )
+        # 1×1 shortcut to match channel dims
+        self.shortcut = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 1),
+            nn.BatchNorm2d(out_channels),
+        ) if in_channels != out_channels else nn.Identity()
+
+        self.pool = nn.MaxPool2d(kernel_size=(2, 1))  # halve freq, keep time
+        self.dropout = nn.Dropout2d(dropout)
+        self.act = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, T, input_size) → (B, T, 2*hidden_size)"""
-        out, _ = self.lstm(x)
+        residual = self.shortcut(x)
+        out = self.conv_path(x)
+        out = self.act(out + residual)
+        out = self.pool(out)
+        out = self.dropout(out)
         return out
 
 
+# ── Multi-Head Self-Attention Block ───────────────────────────────────────────
+
+class AttentionBlock(nn.Module):
+    """
+    Pre-LayerNorm multi-head self-attention with residual.
+    Placed after BiLSTM to add global temporal context.
+    """
+    def __init__(self, embed_dim: int, num_heads: int = 8, dropout: float = 0.1):
+        super().__init__()
+        self.norm = nn.LayerNorm(embed_dim)
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads,
+                                          dropout=dropout, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, T, embed_dim)"""
+        normed = self.norm(x)
+        attn_out, _ = self.attn(normed, normed, normed)
+        return x + self.dropout(attn_out)
+
+
+# ── Main Model ────────────────────────────────────────────────────────────────
+
 class CNNLSTMASR(nn.Module):
     """
-    Full CNN + LSTM ASR model with CTC decoding.
+    Advanced Arabic ASR model:
+      SpecAugment → Residual CNN → Projection → BiLSTM → Self-Attention → CTC
 
-    Input:  (B, 1, n_mels, T)  — log-mel spectrogram
-    Output: (B, T, vocab_size)  — log-softmax over vocabulary per timestep
+    Parameters
+    ----------
+    vocab_size    : size of character vocabulary (including blank=0)
+    n_mels        : number of mel bands in input spectrogram
+    cnn_channels  : list of output channels per ResidualConvBlock
+    lstm_hidden   : BiLSTM hidden size (output is 2×hidden due to bidirectional)
+    lstm_layers   : number of stacked BiLSTM layers
+    lstm_dropout  : dropout between LSTM layers
+    attn_heads    : number of attention heads (must divide 2×lstm_hidden)
     """
 
     def __init__(
         self,
         vocab_size: int,
         n_mels: int = 80,
-        cnn_channels: Tuple[int, ...] = (32, 64, 128),
+        cnn_channels: List[int] = (32, 64, 128),
         cnn_kernel_size: int = 3,
-        cnn_dropout: float = 0.2,
-        lstm_hidden_size: int = 512,
-        lstm_num_layers: int = 3,
+        cnn_dropout: float = 0.15,
+        lstm_hidden: int = 512,
+        lstm_layers: int = 3,
         lstm_dropout: float = 0.3,
+        attn_heads: int = 8,
+        spec_augment: bool = True,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.n_mels = n_mels
 
-        # CNN encoder
-        self.cnn = CNNEncoder(
-            in_channels=1,
-            cnn_channels=cnn_channels,
-            kernel_size=cnn_kernel_size,
-            dropout=cnn_dropout,
-        )
+        # SpecAugment
+        self.spec_aug = SpecAugment() if spec_augment else None
 
-        # Compute CNN output frequency dimension
+        # Residual CNN encoder
+        channels = [1] + list(cnn_channels)
+        self.cnn = nn.Sequential(*[
+            ResidualConvBlock(channels[i], channels[i+1], cnn_kernel_size, cnn_dropout)
+            for i in range(len(cnn_channels))
+        ])
+
+        # Compute flattened CNN output size
         freq_dim = n_mels
         for _ in cnn_channels:
-            freq_dim = freq_dim // 2  # each MaxPool2d(2,1) halves freq
-        lstm_input_size = freq_dim * cnn_channels[-1]
+            freq_dim = freq_dim // 2
+        cnn_out_size = freq_dim * cnn_channels[-1]
 
-        # Bidirectional LSTM
-        self.lstm = BidirectionalLSTM(
-            input_size=lstm_input_size,
-            hidden_size=lstm_hidden_size,
-            num_layers=lstm_num_layers,
-            dropout=lstm_dropout,
+        # Linear projection before LSTM (reduces parameters significantly)
+        self.input_proj = nn.Sequential(
+            nn.Linear(cnn_out_size, lstm_hidden),
+            nn.LayerNorm(lstm_hidden),
+            nn.GELU(),
         )
 
-        # Linear projection to vocab
-        self.fc = nn.Linear(lstm_hidden_size * 2, vocab_size)
+        # Bidirectional LSTM
+        self.lstm = nn.LSTM(
+            input_size=lstm_hidden,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            dropout=lstm_dropout if lstm_layers > 1 else 0,
+            bidirectional=True,
+        )
+
+        lstm_out_dim = lstm_hidden * 2  # bidirectional
+
+        # Multi-head self-attention (global temporal context)
+        self.attention = AttentionBlock(lstm_out_dim, attn_heads)
+
+        # Output
+        self.norm = nn.LayerNorm(lstm_out_dim)
         self.dropout = nn.Dropout(0.2)
+        self.fc = nn.Linear(lstm_out_dim, vocab_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: (B, 1, n_mels, T)
         returns: (B, T, vocab_size) log-softmax
         """
+        # SpecAugment
+        if self.spec_aug is not None:
+            x = self.spec_aug(x)
+
         # CNN: (B, 1, n_mels, T) → (B, C, freq', T)
         x = self.cnn(x)
 
         B, C, freq, T = x.shape
-        # Reshape: merge C and freq, keep T → (B, T, C*freq)
+        # Reshape: (B, T, C*freq)
         x = x.permute(0, 3, 1, 2).reshape(B, T, C * freq)
 
-        # LSTM: (B, T, C*F) → (B, T, 2*hidden)
-        x = self.lstm(x)
-        x = self.dropout(x)
+        # Project to LSTM input size
+        x = self.input_proj(x)
 
-        # Projection: (B, T, vocab_size)
+        # BiLSTM
+        x, _ = self.lstm(x)  # (B, T, 2*hidden)
+
+        # Multi-head self-attention
+        x = self.attention(x)
+
+        # Output projection
+        x = self.norm(x)
+        x = self.dropout(x)
         x = self.fc(x)
         return F.log_softmax(x, dim=-1)
 
-    def ctc_loss(
-        self,
-        log_probs: torch.Tensor,
-        targets: torch.Tensor,
-        input_lengths: torch.Tensor,
-        target_lengths: torch.Tensor,
-        blank: int = 0,
-    ) -> torch.Tensor:
-        """Compute CTC loss. log_probs: (B, T, V) → expects (T, B, V)."""
-        log_probs = log_probs.permute(1, 0, 2)  # (T, B, V)
+    def get_output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
+        """
+        Compute CTC input lengths after CNN time-axis processing.
+        Our CNN only pools along frequency axis (MaxPool2d(2,1)),
+        so time dimension is unchanged. Returns input_lengths as-is.
+        """
+        return input_lengths
+
+    def ctc_loss(self, log_probs, targets, input_lengths, target_lengths, blank=0):
+        """log_probs: (B, T, V) — will be permuted to (T, B, V) for CTC."""
+        ctc_lengths = self.get_output_lengths(
+            torch.full((log_probs.shape[0],), log_probs.shape[1],
+                       dtype=torch.long, device=log_probs.device)
+        )
         return F.ctc_loss(
-            log_probs,
+            log_probs.permute(1, 0, 2),
             targets,
-            input_lengths,
+            ctc_lengths,
             target_lengths,
             blank=blank,
             reduction="mean",
             zero_infinity=True,
         )
 
-    def greedy_decode(self, log_probs: torch.Tensor, blank: int = 0) -> list:
-        """
-        Greedy CTC decoding: argmax at each timestep, collapse repeats, remove blanks.
-        log_probs: (B, T, V)
-        returns: list of lists of token IDs
-        """
-        preds = log_probs.argmax(dim=-1)  # (B, T)
+    def greedy_decode(self, log_probs: torch.Tensor, blank: int = 0) -> List[List[int]]:
+        """Greedy CTC: argmax, collapse repeats, remove blanks."""
+        preds = log_probs.argmax(dim=-1)
         results = []
         for seq in preds:
-            decoded = []
-            prev = None
+            decoded, prev = [], None
             for token in seq.tolist():
                 if token != blank and token != prev:
                     decoded.append(token)
@@ -206,16 +259,17 @@ class CNNLSTMASR(nn.Module):
 
 
 def build_model(vocab_size: int, config: dict) -> CNNLSTMASR:
-    """Instantiate CNN+LSTM model from config dict."""
+    """Instantiate model from config. Uses .get() with defaults for all new keys."""
     cfg = config["cnn_lstm"]
-    model = CNNLSTMASR(
+    return CNNLSTMASR(
         vocab_size=vocab_size,
         n_mels=config["audio"]["n_mels"],
-        cnn_channels=cfg["cnn_channels"],
-        cnn_kernel_size=cfg["cnn_kernel_size"],
-        cnn_dropout=cfg["cnn_dropout"],
-        lstm_hidden_size=cfg["lstm_hidden_size"],
-        lstm_num_layers=cfg["lstm_num_layers"],
-        lstm_dropout=cfg["lstm_dropout"],
+        cnn_channels=cfg.get("cnn_channels", [32, 64, 128]),
+        cnn_kernel_size=cfg.get("cnn_kernel_size", 3),
+        cnn_dropout=cfg.get("cnn_dropout", 0.15),
+        lstm_hidden=cfg.get("lstm_hidden_size", 512),
+        lstm_layers=cfg.get("lstm_num_layers", 3),
+        lstm_dropout=cfg.get("lstm_dropout", 0.3),
+        attn_heads=cfg.get("attention_heads", 8),
+        spec_augment=cfg.get("spec_augment", True),
     )
-    return model
