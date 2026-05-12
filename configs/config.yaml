@@ -67,7 +67,9 @@ whisper:
   beam_size: 5
 
 wav2vec:
-  model_name: "facebook/wav2vec2-large-xlsr-53-arabic"
+  # facebook/wav2vec2-large-xlsr-53-arabic was deprecated by FAIR — using the
+  # community-maintained equivalent (~5k monthly downloads, same backbone).
+  model_name: "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
   device: "auto"
   batch_size: 8
   num_epochs: 10
