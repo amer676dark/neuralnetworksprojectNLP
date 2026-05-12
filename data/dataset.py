@@ -503,6 +503,17 @@ class ArabicASRDataset(Dataset):
         transcript = sample["sentence"]
 
         waveform = normalize_audio(waveform)
+
+        # IMPORTANT — compute the real audio frame count BEFORE padding so CTC
+        # only scores the unpadded portion. Otherwise CTC trivially learns to
+        # predict blank everywhere and gets stuck.
+        sr = 16000
+        max_samples = int(self.max_duration * sr)
+        real_samples = min(len(waveform), max_samples)
+        real_pre_subsample_frames = max(
+            1, (real_samples - self.win_length) // self.hop_length + 1
+        )
+
         waveform = pad_or_trim(waveform, self.max_duration)
         if self.augment and self.return_mode == "mel":
             # Waveform-time augmentation only happens here in legacy mel mode.
@@ -516,13 +527,13 @@ class ArabicASRDataset(Dataset):
         if self.return_mode == "waveform":
             # GPU-side mel extraction path (fast)
             wav_t = torch.tensor(waveform, dtype=torch.float32)
-            # input_length on the spec-time axis = (samples - win) // hop + 1
-            n_frames = max(1, (wav_t.shape[-1] - self.win_length) // self.hop_length + 1)
             return {
                 "waveform": wav_t,
                 "tokens": tokens_t,
                 "transcript": transcript,
-                "input_length": n_frames,
+                # PRE-subsampling frame count. The training loop converts to
+                # post-subsampling using model.get_output_lengths().
+                "input_length": real_pre_subsample_frames,
                 "target_length": target_length,
             }
 

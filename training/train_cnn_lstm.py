@@ -179,15 +179,16 @@ def load_checkpoint(
 # Train / Eval steps
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _to_device(batch: Dict, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, list]:
+def _to_device(batch: Dict, device: torch.device):
     if "waveform" in batch:
         inp = batch["waveform"].to(device, non_blocking=True)
     else:
         inp = batch["mel"].to(device, non_blocking=True)
     tokens = batch["tokens"].to(device, non_blocking=True)
     target_lengths = batch["target_lengths"].to(device, non_blocking=True)
+    input_lengths_pre = batch["input_lengths"].to(device, non_blocking=True)
     transcripts = batch["transcripts"]
-    return inp, tokens, target_lengths, transcripts
+    return inp, tokens, target_lengths, input_lengths_pre, transcripts
 
 
 def train_one_epoch(
@@ -207,7 +208,7 @@ def train_one_epoch(
 
     pbar = tqdm(loader, desc="  Train", leave=False, dynamic_ncols=True)
     for step, batch in enumerate(pbar, 1):
-        inp, tokens, target_lengths, _ = _to_device(batch, device)
+        inp, tokens, target_lengths, input_lengths_pre, _ = _to_device(batch, device)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -217,13 +218,12 @@ def train_one_epoch(
         # CTC always in fp32 for numerical stability
         log_probs_fp32 = log_probs.float() if use_amp else log_probs
 
-        # Input lengths reflect the time-subsampling done by the CNN
+        # Convert PRE-subsampling frame counts (from the dataset) into the
+        # POST-subsampling frame counts the model actually emits.
         T_out = log_probs_fp32.shape[1]
-        input_lengths = torch.full(
-            (inp.shape[0],), T_out, dtype=torch.long, device=device
-        )
+        underlying = _model_for_decode(model)
+        input_lengths = underlying.get_output_lengths(input_lengths_pre).clamp(max=T_out)
 
-        # Ensure each target is at most T_out; CTC requires T_out >= 2*target_len - 1
         loss = _call_ctc_loss(
             model, log_probs_fp32, tokens, input_lengths, target_lengths
         )
@@ -272,16 +272,15 @@ def evaluate(
     for i, batch in iter_loader:
         if max_batches is not None and i >= max_batches:
             break
-        inp, tokens, target_lengths, transcripts = _to_device(batch, device)
+        inp, tokens, target_lengths, input_lengths_pre, transcripts = _to_device(batch, device)
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
             log_probs = model(inp)
         log_probs_fp32 = log_probs.float() if use_amp else log_probs
 
         T_out = log_probs_fp32.shape[1]
-        input_lengths = torch.full(
-            (inp.shape[0],), T_out, dtype=torch.long, device=device
-        )
+        underlying = _model_for_decode(model)
+        input_lengths = underlying.get_output_lengths(input_lengths_pre).clamp(max=T_out)
         loss = _call_ctc_loss(
             model, log_probs_fp32, tokens, input_lengths, target_lengths
         )

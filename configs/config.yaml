@@ -32,10 +32,10 @@ cnn_lstm:
   # CNN encoder: 4x time + 4x freq subsampling, then a residual block
   cnn_channels: [64, 128, 256]
   cnn_dropout: 0.1
-  # BiLSTM — right-sized for 40k samples (LSTM dominates per-step cost)
-  lstm_hidden_size: 512
-  lstm_num_layers: 3
-  lstm_dropout: 0.1
+  # BiLSTM — bumped to 768x4 (~55M total params) for more capacity
+  lstm_hidden_size: 768
+  lstm_num_layers: 4
+  lstm_dropout: 0.15
   # Self-attention
   attention_heads: 8
   # SpecAugment in the subsampled domain (auto-scaled mask widths)
@@ -43,7 +43,7 @@ cnn_lstm:
 
   # Training
   batch_size: 96             # larger batches → better Blackwell tensor-core utilization
-  learning_rate: 0.0007      # scaled to match the larger effective batch
+  learning_rate: 0.0005      # more conservative since CTC input_lengths now mask padding
   weight_decay: 0.00001
   num_epochs: 25             # 25 ep is plenty with the new architecture + EMA eval
   gradient_clip: 5.0
