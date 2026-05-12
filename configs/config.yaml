@@ -46,6 +46,7 @@ cnn_lstm:
   batch_size: 64           # RTX Pro 6000 fits this easily
   learning_rate: 0.0005    # slightly higher to match bigger batch
   num_epochs: 60
+  num_workers: 24          # 32-core box — keep GPU fed
   gradient_clip: 5.0
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
 

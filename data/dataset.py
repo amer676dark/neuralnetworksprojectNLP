@@ -591,10 +591,33 @@ def get_dataloaders(
         max_duration=max_dur, augment=False, vocab=train_ds.vocab)
 
     bs = config["cnn_lstm"]["batch_size"]
+    # Audio loading + librosa mel extraction is CPU-bound; scale workers to host.
+    # Allow override via config: cnn_lstm.num_workers
+    try:
+        n_cpu = max(2, (os.cpu_count() or 8))
+    except Exception:
+        n_cpu = 8
+    train_workers = config["cnn_lstm"].get("num_workers", min(16, n_cpu - 2))
+    eval_workers  = max(2, train_workers // 2)
     return (
-        DataLoader(train_ds, batch_size=bs, shuffle=True,  collate_fn=collate_fn, num_workers=4, pin_memory=True),
-        DataLoader(val_ds,   batch_size=bs, shuffle=False, collate_fn=collate_fn, num_workers=2),
-        DataLoader(test_ds,  batch_size=bs, shuffle=False, collate_fn=collate_fn, num_workers=2),
+        DataLoader(
+            train_ds, batch_size=bs, shuffle=True, collate_fn=collate_fn,
+            num_workers=train_workers, pin_memory=True,
+            persistent_workers=(train_workers > 0),
+            prefetch_factor=4 if train_workers > 0 else None,
+        ),
+        DataLoader(
+            val_ds, batch_size=bs, shuffle=False, collate_fn=collate_fn,
+            num_workers=eval_workers,
+            persistent_workers=(eval_workers > 0),
+            prefetch_factor=2 if eval_workers > 0 else None,
+        ),
+        DataLoader(
+            test_ds, batch_size=bs, shuffle=False, collate_fn=collate_fn,
+            num_workers=eval_workers,
+            persistent_workers=(eval_workers > 0),
+            prefetch_factor=2 if eval_workers > 0 else None,
+        ),
         train_ds.vocab,
     )
 
