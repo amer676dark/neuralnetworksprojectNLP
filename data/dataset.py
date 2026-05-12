@@ -271,6 +271,15 @@ def load_kaggle_arabic_tts(
             "Inspect the first few lines of metadata.csv and confirm the separator."
         )
 
+    # Deterministically shuffle so train/val/test sample the same speaker
+    # distribution. Without this, Common Voice's CSV-order clusters clips by
+    # speaker; the slice-based split puts entire speakers in only one of
+    # train/val/test, causing severe distribution mismatch (val WER stuck
+    # near 1.0 even when training perfectly fits the training set).
+    import random as _random
+    rng = _random.Random(42)
+    rng.shuffle(samples)
+
     n = len(samples)
     train_end = int(n * split_ratio[0])
     val_end   = int(n * (split_ratio[0] + split_ratio[1]))
@@ -284,7 +293,7 @@ def load_kaggle_arabic_tts(
     if max_samples:
         samples = samples[:max_samples]
 
-    print(f"  {len(samples)} samples ({split}) out of {n} total.")
+    print(f"  {len(samples)} samples ({split}) out of {n} total (shuffled, seed=42).")
     return _LocalFileSampleList(samples)
 
 

@@ -45,7 +45,7 @@ cnn_lstm:
   batch_size: 96             # larger batches → better Blackwell tensor-core utilization
   learning_rate: 0.0005      # more conservative since CTC input_lengths now mask padding
   weight_decay: 0.00001
-  num_epochs: 25             # 25 ep is plenty with the new architecture + EMA eval
+  num_epochs: 18             # train loss converges by ~ep 12-15 on this dataset
   gradient_clip: 5.0
   warmup_pct: 0.1            # OneCycleLR warmup fraction
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
