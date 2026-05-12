@@ -64,7 +64,7 @@ class SeamlessM4TASR:
             raise ValueError("SeamlessM4T requires 16 kHz audio.")
         wav = waveform.astype(np.float32)
         inputs = self.processor(
-            audios=wav,
+            audio=wav,                       # transformers 5.x: was `audios=`
             sampling_rate=sample_rate,
             return_tensors="pt",
         ).to(self.device)
