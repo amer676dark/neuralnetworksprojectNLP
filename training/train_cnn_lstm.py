@@ -10,6 +10,8 @@ import os
 import sys
 import json
 import argparse
+import matplotlib
+matplotlib.use("Agg")  # headless — must be set before any pyplot import
 import yaml
 import torch
 import torch.optim as optim

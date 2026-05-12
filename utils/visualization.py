@@ -24,7 +24,9 @@ def plot_waveform(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_mel_spectrogram(
@@ -49,7 +51,9 @@ def plot_mel_spectrogram(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_training_curves(
@@ -88,7 +92,9 @@ def plot_training_curves(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_model_comparison(
@@ -129,7 +135,9 @@ def plot_model_comparison(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_confusion_matrix_wer(
@@ -153,4 +161,6 @@ def plot_confusion_matrix_wer(
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.show()
+        plt.close()
+    else:
+        plt.show()

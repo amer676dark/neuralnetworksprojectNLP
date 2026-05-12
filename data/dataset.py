@@ -175,6 +175,86 @@ def load_arabic_speech_corpus(
     return _LocalFileSampleList(samples)
 
 
+def load_kaggle_arabic_tts(
+    data_dir: str,
+    split: str = "train",
+    max_samples: Optional[int] = None,
+    split_ratio: Tuple[float, float, float] = (0.9, 0.05, 0.05),
+) -> List[Dict]:
+    """
+    Kaggle 'arabic_tts' dataset (Common Voice 11.0 Arabic subset).
+      https://www.kaggle.com/datasets/mayarjao/arabic-tts
+
+    Expected layout after Kaggle download + unzip:
+      data_dir/
+        wavs/                    ← 78.7k .wav files
+        metadata.csv             ← filename|transcript[|speaker] (LJSpeech-style)
+        metadata-wav.csv         ← alt. variant with explicit .wav extension
+    """
+    data_dir = Path(data_dir)
+    print(f"Loading Kaggle arabic_tts from {data_dir} ({split})...")
+
+    wav_dir = data_dir / "wavs"
+    if not wav_dir.exists():
+        # Fall back — sometimes the zip nests an extra folder
+        nested = next(data_dir.glob("*/wavs"), None)
+        if nested:
+            wav_dir = nested
+            data_dir = nested.parent
+        else:
+            raise FileNotFoundError(f"No wavs/ folder under {data_dir}")
+
+    # Prefer metadata-wav.csv (filenames have .wav), then metadata.csv
+    meta_path = data_dir / "metadata-wav.csv"
+    if not meta_path.exists():
+        meta_path = data_dir / "metadata.csv"
+    if not meta_path.exists():
+        raise FileNotFoundError(f"No metadata.csv under {data_dir}")
+
+    samples = []
+    # LJSpeech-style separators can be | or , — try both
+    with open(meta_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split("|") if "|" in line else line.split(",", 1)
+            if len(parts) < 2:
+                continue
+            fname, text = parts[0].strip(), parts[1].strip()
+            # Strip wrapping quotes
+            text = text.strip('"').strip("'")
+            wav_path = wav_dir / fname
+            if not wav_path.suffix:
+                wav_path = wav_path.with_suffix(".wav")
+            if wav_path.exists() and text:
+                samples.append({"path": str(wav_path), "sentence": text})
+
+    if not samples:
+        raise ValueError(
+            f"No (wav, transcript) pairs found.\n"
+            f"  metadata: {meta_path}\n"
+            f"  wavs dir: {wav_dir}\n"
+            "Inspect the first few lines of metadata.csv and confirm the separator."
+        )
+
+    n = len(samples)
+    train_end = int(n * split_ratio[0])
+    val_end   = int(n * (split_ratio[0] + split_ratio[1]))
+    if split == "train":
+        samples = samples[:train_end]
+    elif split == "validation":
+        samples = samples[train_end:val_end]
+    else:
+        samples = samples[val_end:]
+
+    if max_samples:
+        samples = samples[:max_samples]
+
+    print(f"  {len(samples)} samples ({split}) out of {n} total.")
+    return _LocalFileSampleList(samples)
+
+
 def load_ejust(
     data_dir: str,
     split: str = "train",
@@ -302,13 +382,17 @@ def load_dataset_by_name(
         if not data_dir:
             raise ValueError("data_dir is required for Arabic Speech Corpus")
         return load_arabic_speech_corpus(data_dir, split, max_samples)
+    elif name in ("kaggle_arabic_tts", "arabic_tts", "kaggle"):
+        if not data_dir:
+            raise ValueError("data_dir is required for Kaggle arabic_tts dataset")
+        return load_kaggle_arabic_tts(data_dir, split, max_samples)
     elif name == "ejust":
         if not data_dir:
             raise ValueError("data_dir is required for EJUST dataset")
         return load_ejust(data_dir, split, max_samples)
     else:
         raise ValueError(f"Unknown dataset: '{name}'. "
-                         f"Choose from: common_voice, masc, arabic_speech_corpus, ejust")
+                         f"Choose from: common_voice, masc, arabic_speech_corpus, kaggle_arabic_tts, ejust")
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -4,10 +4,18 @@ torchaudio>=2.0.0
 torchvision>=0.15.0
 
 # Hugging Face ecosystem
-transformers>=4.35.0
+transformers>=4.40.0          # 4.40+ for SeamlessM4T-v2 stability
 datasets>=2.14.0
 evaluate>=0.4.0
 accelerate>=0.24.0
+sentencepiece>=0.1.99         # tokenizer for SeamlessM4T / mT5
+sentence-transformers>=2.7.0  # semantic search for the summarize+search task
+
+# Speaker identification (ECAPA-TDNN)
+speechbrain>=1.0.0
+
+# Kaggle dataset download
+kaggle>=1.6.0
 
 # OpenAI Whisper
 openai-whisper>=20231117

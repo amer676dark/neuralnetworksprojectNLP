@@ -13,6 +13,8 @@ import os
 import sys
 import json
 import argparse
+import matplotlib
+matplotlib.use("Agg")  # headless — must be set before any pyplot import
 import yaml
 import torch
 import numpy as np
@@ -45,6 +47,29 @@ def evaluate_whisper(config: dict, test_samples: list) -> dict:
 
     metrics = compute_batch_metrics(references, hypotheses)
     metrics["model"] = f"Whisper-{config['whisper']['model_size']}"
+    return metrics, references, hypotheses
+
+
+def evaluate_seamless_m4t(config: dict, test_samples: list) -> dict:
+    from models.seamless_m4t_asr import SeamlessM4TASR
+
+    model = SeamlessM4TASR(
+        model_name=config["seamless_m4t"]["model_name"],
+        language=config["seamless_m4t"]["language"],
+        device=config["seamless_m4t"]["device"],
+    )
+
+    references = [s["sentence"] for s in test_samples]
+    hypotheses = []
+
+    print(f"Evaluating SeamlessM4T-v2 on {len(test_samples)} samples...")
+    for sample in tqdm(test_samples):
+        audio = sample["audio"]["array"].astype(np.float32)
+        hyp = model.transcribe_array(audio)
+        hypotheses.append(hyp)
+
+    metrics = compute_batch_metrics(references, hypotheses)
+    metrics["model"] = "SeamlessM4T-v2"
     return metrics, references, hypotheses
 
 
@@ -121,7 +146,7 @@ def evaluate_cnn_lstm(config: dict, checkpoint_path: str, test_samples: list) ->
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Arabic ASR models")
     parser.add_argument("--config", default="configs/config.yaml")
-    parser.add_argument("--model", choices=["whisper", "wav2vec", "cnn_lstm", "all"], default="all")
+    parser.add_argument("--model", choices=["whisper", "wav2vec", "seamless", "cnn_lstm", "all"], default="all")
     parser.add_argument("--checkpoint", default="outputs/checkpoints/cnn_lstm/best_model.pt")
     parser.add_argument("--num_samples", type=int, default=200)
     args = parser.parse_args()
@@ -129,10 +154,18 @@ def main():
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    # Load test data
+    # Load test data — uses whatever dataset is configured (common_voice, masc, etc.)
     print("Loading test dataset...")
-    from data.dataset import load_common_voice_arabic
-    test_ds = load_common_voice_arabic("test", max_samples=args.num_samples)
+    from data.dataset import load_dataset_by_name
+    src      = config["data"].get("source", "common_voice")
+    data_dir = config["data"].get("data_dir")
+    hf_token = config["data"].get("hf_token") or os.environ.get("HF_TOKEN")
+    test_ds = load_dataset_by_name(
+        src, "test",
+        data_dir=data_dir,
+        max_samples=args.num_samples,
+        hf_token=hf_token,
+    )
     test_samples = list(test_ds)
 
     results = {}
@@ -158,6 +191,18 @@ def main():
         print(format_metrics_report(m))
 
         _save_predictions(refs, hyps, "outputs/results/wav2vec_predictions.json")
+
+    if args.model in ("seamless", "all"):
+        try:
+            m, refs, hyps = evaluate_seamless_m4t(config, test_samples)
+            results["seamless_m4t"] = m
+            model_names.append(m["model"])
+            wer_scores.append(m["wer"])
+            cer_scores.append(m["cer"])
+            print(format_metrics_report(m))
+            _save_predictions(refs, hyps, "outputs/results/seamless_m4t_predictions.json")
+        except Exception as e:
+            print(f"SeamlessM4T evaluation skipped: {e}")
 
     if args.model in ("cnn_lstm", "all") and Path(args.checkpoint).exists():
         m, refs, hyps = evaluate_cnn_lstm(config, args.checkpoint, test_samples)

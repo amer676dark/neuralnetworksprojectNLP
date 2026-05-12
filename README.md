@@ -89,8 +89,8 @@ NeuralNetworksNLP/
 
 ## Dataset
 
-**Mozilla Common Voice 13.0 — Arabic**
-- Source: `mozilla-foundation/common_voice_13_0` (HuggingFace)
+**Mozilla Common Voice 17.0 — Arabic**
+- Source: `mozilla-foundation/common_voice_17_0` (HuggingFace)
 - Language: Arabic (`ar`)
 - Format: MP3 → resampled to 16kHz WAV
 - Splits: train / validation / test

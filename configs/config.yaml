@@ -4,18 +4,18 @@ project:
   language: "ar"
 
 data:
-  # Source: "common_voice" | "masc" | "arabic_speech_corpus" | "ejust" | "combined"
-  source: "common_voice"
-  # For local datasets (arabic_speech_corpus, ejust) — set the folder path
-  data_dir: null
-  # HuggingFace token — required for Common Voice (or set HF_TOKEN env var)
+  # Source: "common_voice" | "masc" | "arabic_speech_corpus" | "kaggle_arabic_tts" | "ejust" | "combined"
+  source: "kaggle_arabic_tts"
+  # For local datasets (kaggle_arabic_tts, arabic_speech_corpus, ejust) — set the folder path
+  data_dir: "./data/arabic_tts"
+  # HuggingFace token — required for Common Voice / SeamlessM4T (or set HF_TOKEN env var)
   hf_token: null
   # Which sources to mix if source = "combined"
-  combine_sources: ["common_voice", "masc"]
+  combine_sources: ["kaggle_arabic_tts", "arabic_speech_corpus", "masc"]
 
   sample_rate: 16000
   max_duration: 10       # seconds — clips longer than this are skipped
-  max_train_samples: 5000
+  max_train_samples: 20000   # 20k is the sweet spot on a 96GB GPU
   max_eval_samples: 500
   processed_dir: "./data/processed"
 
@@ -30,21 +30,21 @@ audio:
   max_audio_length: 10
 
 cnn_lstm:
-  # CNN
-  cnn_channels: [32, 64, 128]
+  # CNN — larger first block on a 96GB GPU
+  cnn_channels: [64, 128, 256]
   cnn_kernel_size: 3
   cnn_dropout: 0.15
-  # LSTM
-  lstm_hidden_size: 512
-  lstm_num_layers: 3
+  # BiLSTM — bigger hidden + extra layer (96GB VRAM allows this comfortably)
+  lstm_hidden_size: 768
+  lstm_num_layers: 4
   lstm_dropout: 0.3
   # Attention
   attention_heads: 8
   # SpecAugment
   spec_augment: true
   # Training
-  batch_size: 16
-  learning_rate: 0.0003
+  batch_size: 64           # was 16 — RTX Pro 6000 fits this easily
+  learning_rate: 0.0005    # slightly higher to match bigger batch
   num_epochs: 50
   gradient_clip: 5.0
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
@@ -64,6 +64,34 @@ wav2vec:
   learning_rate: 1e-4
   warmup_ratio: 0.1
   checkpoint_dir: "./outputs/checkpoints/wav2vec"
+
+seamless_m4t:
+  model_name: "facebook/seamless-m4t-v2-large"  # use hf-seamless-m4t-medium if VRAM is tight
+  language: "arb"     # ISO 639-3 — Standard Arabic
+  device: "auto"
+
+advanced:
+  # 4 optional advanced tasks from the project requirements.
+  speaker_id:
+    enabled: true
+    model_name: "speechbrain/spkrec-ecapa-voxceleb"
+    similarity_threshold: 0.7
+  emotion:
+    enabled: true
+    model_name: "harshit345/xlsr-wav2vec-speech-emotion-recognition"
+    classes: ["angry", "calm", "disgust", "fear", "happy", "neutral", "sad", "surprise"]
+  keyword_spotting:
+    enabled: true
+    keywords: ["طوارئ", "موعد نهائي", "امتحان", "emergency", "deadline", "exam"]
+  summarization:
+    enabled: true
+    model_name: "csebuetnlp/mT5_multilingual_XLSum"
+    max_length: 80
+    min_length: 20
+  search:
+    enabled: true
+    embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    top_k: 5
 
 evaluation:
   metrics: ["wer", "cer"]
