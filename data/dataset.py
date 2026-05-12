@@ -459,9 +459,28 @@ class ArabicASRDataset(Dataset):
         self.idx2char = {v: k for k, v in self.vocab.items()}
 
     def _build_vocab(self) -> Dict[str, int]:
+        """
+        Build the character vocabulary by scanning training transcripts.
+        Fast path: avoid loading audio files when only the sentence is needed.
+        """
         chars = set()
-        for sample in tqdm(self.dataset, desc="Building vocabulary"):
-            chars.update(sample["sentence"])
+        # Fast path A — _LocalFileSampleList keeps sentences in memory already
+        if hasattr(self.dataset, "_samples") and isinstance(self.dataset._samples, list):
+            for s in tqdm(self.dataset._samples, desc="Building vocabulary"):
+                chars.update(s["sentence"])
+        # Fast path B — HuggingFace dataset: project to text column only
+        elif hasattr(self.dataset, "select_columns"):
+            try:
+                txt_only = self.dataset.select_columns(["sentence"])
+                for s in tqdm(txt_only, desc="Building vocabulary"):
+                    chars.update(s["sentence"])
+            except Exception:
+                for s in tqdm(self.dataset, desc="Building vocabulary"):
+                    chars.update(s["sentence"])
+        # Slow fallback — iterate the source as-is
+        else:
+            for s in tqdm(self.dataset, desc="Building vocabulary"):
+                chars.update(s["sentence"])
         vocab = {"<pad>": 0, "<unk>": 1, "<sos>": 2, "<eos>": 3, " ": 4}
         for i, ch in enumerate(sorted(chars - {" "}), start=5):
             vocab[ch] = i
