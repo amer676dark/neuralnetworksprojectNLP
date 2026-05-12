@@ -105,7 +105,7 @@ def train_one_epoch(
         # CTC requires input_lengths in time-steps (T after CNN)
         # T_out = T_in (no time reduction in our CNN)
         ctc_input_lengths = torch.full(
-            (mel.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
+            (inp.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
         )
 
         loss = model.ctc_loss(log_probs, tokens, ctc_input_lengths, target_lengths)
@@ -148,7 +148,7 @@ def evaluate(model, loader, device, vocab, max_batches: int = 50) -> tuple:
 
         log_probs = model(inp)
         ctc_input_lengths = torch.full(
-            (mel.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
+            (inp.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
         )
         loss = model.ctc_loss(log_probs, tokens, ctc_input_lengths, target_lengths)
 
