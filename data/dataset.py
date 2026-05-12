@@ -447,6 +447,7 @@ class ArabicASRDataset(Dataset):
         max_duration: float = 10.0,
         augment: bool = False,
         vocab: Optional[Dict[str, int]] = None,
+        return_mode: str = "waveform",  # "waveform" (GPU mel later) | "mel" (legacy CPU mel)
     ):
         self.dataset = source
         self.n_mels = n_mels
@@ -455,6 +456,7 @@ class ArabicASRDataset(Dataset):
         self.win_length = win_length
         self.max_duration = max_duration
         self.augment = augment
+        self.return_mode = return_mode
         self.vocab = vocab if vocab is not None else self._build_vocab()
         self.idx2char = {v: k for k, v in self.vocab.items()}
 
@@ -502,46 +504,73 @@ class ArabicASRDataset(Dataset):
 
         waveform = normalize_audio(waveform)
         waveform = pad_or_trim(waveform, self.max_duration)
-        if self.augment:
+        if self.augment and self.return_mode == "mel":
+            # Waveform-time augmentation only happens here in legacy mel mode.
+            # In waveform mode, the model applies SpecAugment on GPU instead.
             waveform = apply_augmentation(waveform)
 
+        tokens = self.encode_text(transcript)
+        target_length = len(tokens)
+        tokens_t = torch.tensor(tokens, dtype=torch.long)
+
+        if self.return_mode == "waveform":
+            # GPU-side mel extraction path (fast)
+            wav_t = torch.tensor(waveform, dtype=torch.float32)
+            # input_length on the spec-time axis = (samples - win) // hop + 1
+            n_frames = max(1, (wav_t.shape[-1] - self.win_length) // self.hop_length + 1)
+            return {
+                "waveform": wav_t,
+                "tokens": tokens_t,
+                "transcript": transcript,
+                "input_length": n_frames,
+                "target_length": target_length,
+            }
+
+        # ── Legacy CPU-mel path ──
         mel = extract_mel_spectrogram(
             waveform, n_mels=self.n_mels, n_fft=self.n_fft,
             hop_length=self.hop_length, win_length=self.win_length,
         )
         mel_t = torch.tensor(mel, dtype=torch.float32).unsqueeze(0)
         mel_t = (mel_t - mel_t.mean()) / (mel_t.std() + 1e-8)
-
-        tokens = self.encode_text(transcript)
         return {
             "mel": mel_t,
-            "tokens": torch.tensor(tokens, dtype=torch.long),
+            "tokens": tokens_t,
             "transcript": transcript,
             "input_length": mel_t.shape[-1],
-            "target_length": len(tokens),
+            "target_length": target_length,
         }
 
 
 def collate_fn(batch: List[Dict]) -> Dict:
-    mels    = [b["mel"]    for b in batch]
+    """
+    Handles both return modes:
+      - waveform mode: stacks raw waveforms (all already pad_or_trim'd to same length)
+      - mel mode:      pads variable-length mels along the time axis
+    """
     tokens  = [b["tokens"] for b in batch]
-    max_mel = max(m.shape[-1] for m in mels)
-    max_tok = max(len(t)      for t in tokens)
-
-    padded_mels   = torch.zeros(len(mels),   1, mels[0].shape[1], max_mel)
+    max_tok = max(len(t) for t in tokens)
     padded_tokens = torch.zeros(len(tokens), max_tok, dtype=torch.long)
-
-    for i, (m, t) in enumerate(zip(mels, tokens)):
-        padded_mels[i, :, :, :m.shape[-1]] = m
+    for i, t in enumerate(tokens):
         padded_tokens[i, :len(t)] = t
 
-    return {
-        "mel":            padded_mels,
+    out = {
         "tokens":         padded_tokens,
         "transcripts":    [b["transcript"] for b in batch],
         "input_lengths":  torch.tensor([b["input_length"]  for b in batch], dtype=torch.long),
         "target_lengths": torch.tensor([b["target_length"] for b in batch], dtype=torch.long),
     }
+
+    if "waveform" in batch[0]:
+        out["waveform"] = torch.stack([b["waveform"] for b in batch], dim=0)  # (B, samples)
+    else:
+        mels = [b["mel"] for b in batch]
+        max_mel = max(m.shape[-1] for m in mels)
+        padded_mels = torch.zeros(len(mels), 1, mels[0].shape[1], max_mel)
+        for i, m in enumerate(mels):
+            padded_mels[i, :, :, :m.shape[-1]] = m
+        out["mel"] = padded_mels
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -577,18 +606,20 @@ def get_dataloaders(
         val_raw   = load_dataset_by_name(src, "validation", data_dir, max_eval,  hf_token)
         test_raw  = load_dataset_by_name(src, "test",       data_dir, max_eval,  hf_token)
 
+    # Default to waveform mode (GPU mel extraction in model — much faster on big runs)
+    return_mode = config["cnn_lstm"].get("return_mode", "waveform")
     train_ds = ArabicASRDataset(train_raw,
         n_mels=audio_cfg["n_mels"], n_fft=audio_cfg["n_fft"],
         hop_length=audio_cfg["hop_length"], win_length=audio_cfg["win_length"],
-        max_duration=max_dur, augment=True, vocab=vocab)
+        max_duration=max_dur, augment=True, vocab=vocab, return_mode=return_mode)
     val_ds   = ArabicASRDataset(val_raw,
         n_mels=audio_cfg["n_mels"], n_fft=audio_cfg["n_fft"],
         hop_length=audio_cfg["hop_length"], win_length=audio_cfg["win_length"],
-        max_duration=max_dur, augment=False, vocab=train_ds.vocab)
+        max_duration=max_dur, augment=False, vocab=train_ds.vocab, return_mode=return_mode)
     test_ds  = ArabicASRDataset(test_raw,
         n_mels=audio_cfg["n_mels"], n_fft=audio_cfg["n_fft"],
         hop_length=audio_cfg["hop_length"], win_length=audio_cfg["win_length"],
-        max_duration=max_dur, augment=False, vocab=train_ds.vocab)
+        max_duration=max_dur, augment=False, vocab=train_ds.vocab, return_mode=return_mode)
 
     bs = config["cnn_lstm"]["batch_size"]
     # Audio loading + librosa mel extraction is CPU-bound; scale workers to host.

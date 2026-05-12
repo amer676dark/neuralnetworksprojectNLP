@@ -90,14 +90,17 @@ def train_one_epoch(
 
     pbar = tqdm(loader, desc="  Train", leave=False)
     for batch in pbar:
-        mel = batch["mel"].to(device)
-        tokens = batch["tokens"].to(device)
-        input_lengths = batch["input_lengths"].to(device)
-        target_lengths = batch["target_lengths"].to(device)
+        if "waveform" in batch:
+            inp = batch["waveform"].to(device, non_blocking=True)
+        else:
+            inp = batch["mel"].to(device, non_blocking=True)
+        tokens = batch["tokens"].to(device, non_blocking=True)
+        input_lengths = batch["input_lengths"].to(device, non_blocking=True)
+        target_lengths = batch["target_lengths"].to(device, non_blocking=True)
 
         optimizer.zero_grad()
 
-        log_probs = model(mel)  # (B, T, V)
+        log_probs = model(inp)  # (B, T, V)
 
         # CTC requires input_lengths in time-steps (T after CNN)
         # T_out = T_in (no time reduction in our CNN)
@@ -135,12 +138,15 @@ def evaluate(model, loader, device, vocab, max_batches: int = 50) -> tuple:
         if i >= max_batches:
             break
 
-        mel = batch["mel"].to(device)
-        tokens = batch["tokens"].to(device)
-        target_lengths = batch["target_lengths"].to(device)
+        if "waveform" in batch:
+            inp = batch["waveform"].to(device, non_blocking=True)
+        else:
+            inp = batch["mel"].to(device, non_blocking=True)
+        tokens = batch["tokens"].to(device, non_blocking=True)
+        target_lengths = batch["target_lengths"].to(device, non_blocking=True)
         transcripts = batch["transcripts"]
 
-        log_probs = model(mel)
+        log_probs = model(inp)
         ctc_input_lengths = torch.full(
             (mel.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
         )

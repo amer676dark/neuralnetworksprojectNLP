@@ -138,10 +138,25 @@ class CNNLSTMASR(nn.Module):
         lstm_dropout: float = 0.3,
         attn_heads: int = 8,
         spec_augment: bool = True,
+        # GPU mel-extraction params (used when forward receives raw waveform)
+        sample_rate: int = 16000,
+        n_fft: int = 512,
+        hop_length: int = 160,
+        win_length: int = 400,
+        f_min: float = 0.0,
+        f_max: float = 8000.0,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.n_mels = n_mels
+
+        # GPU mel extractor — used when forward() receives raw waveform (B, samples)
+        self.mel_spec = T.MelSpectrogram(
+            sample_rate=sample_rate, n_fft=n_fft, hop_length=hop_length,
+            win_length=win_length, n_mels=n_mels, f_min=f_min, f_max=f_max,
+            power=2.0,
+        )
+        self.amp_to_db = T.AmplitudeToDB(top_db=80.0)
 
         # SpecAugment
         self.spec_aug = SpecAugment() if spec_augment else None
@@ -188,9 +203,21 @@ class CNNLSTMASR(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        x: (B, 1, n_mels, T)
+        x can be:
+          - raw waveform (B, samples)         → GPU mel + normalize done here
+          - log-mel spec  (B, 1, n_mels, T)   → used as-is (legacy CPU-mel path)
         returns: (B, T, vocab_size) log-softmax
         """
+        if x.dim() == 2:
+            # GPU mel extraction
+            mel = self.mel_spec(x)               # (B, n_mels, T)
+            mel = self.amp_to_db(mel)            # log-mel in dB
+            # Per-sample normalization (zero-mean, unit-std over freq × time)
+            mean = mel.mean(dim=(-1, -2), keepdim=True)
+            std  = mel.std(dim=(-1, -2), keepdim=True).clamp_min(1e-8)
+            mel  = (mel - mean) / std
+            x = mel.unsqueeze(1)                 # (B, 1, n_mels, T)
+
         # SpecAugment
         if self.spec_aug is not None:
             x = self.spec_aug(x)
@@ -261,9 +288,10 @@ class CNNLSTMASR(nn.Module):
 def build_model(vocab_size: int, config: dict) -> CNNLSTMASR:
     """Instantiate model from config. Uses .get() with defaults for all new keys."""
     cfg = config["cnn_lstm"]
+    audio = config.get("audio", {})
     return CNNLSTMASR(
         vocab_size=vocab_size,
-        n_mels=config["audio"]["n_mels"],
+        n_mels=audio.get("n_mels", 80),
         cnn_channels=cfg.get("cnn_channels", [32, 64, 128]),
         cnn_kernel_size=cfg.get("cnn_kernel_size", 3),
         cnn_dropout=cfg.get("cnn_dropout", 0.15),
@@ -272,4 +300,10 @@ def build_model(vocab_size: int, config: dict) -> CNNLSTMASR:
         lstm_dropout=cfg.get("lstm_dropout", 0.3),
         attn_heads=cfg.get("attention_heads", 8),
         spec_augment=cfg.get("spec_augment", True),
+        sample_rate=audio.get("sample_rate", 16000),
+        n_fft=audio.get("n_fft", 512),
+        hop_length=audio.get("hop_length", 160),
+        win_length=audio.get("win_length", 400),
+        f_min=audio.get("f_min", 0.0),
+        f_max=audio.get("f_max", 8000.0),
     )
