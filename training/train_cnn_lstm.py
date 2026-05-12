@@ -343,14 +343,19 @@ def train(config_path: str, resume: Optional[str] = None) -> None:
     if ema:
         print(f"EMA decay: {ema.decay}")
 
-    # torch.compile — kicks in lazily on first batch
+    # torch.compile — kicks in lazily on first batch.
+    # Note: "reduce-overhead" (cudagraphs) breaks on SpecAugment's mask_along_axis
+    # because the mask widths are dynamic. Default to mode="default" (Inductor
+    # without cudagraphs), which is safe and still gives a meaningful speedup.
     compiled_model = model
     if device.type == "cuda" and cfg.get("compile", False):
+        compile_mode = cfg.get("compile_mode", "default")
         try:
-            compiled_model = torch.compile(model, mode="reduce-overhead", dynamic=True)
-            print("torch.compile: reduce-overhead (compilation happens on first batch)")
+            compiled_model = torch.compile(model, mode=compile_mode, dynamic=True)
+            print(f"torch.compile: mode={compile_mode} (compilation happens on first batch)")
         except Exception as e:
             print(f"torch.compile failed ({e}) — running uncompiled.")
+            compiled_model = model
 
     # ── Optimizer & schedule ─────────────────────────────────────────────────
     optimizer = optim.AdamW(
