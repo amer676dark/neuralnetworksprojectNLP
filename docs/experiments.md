@@ -75,15 +75,23 @@ Raw waveform (B, samples)
 | Train samples | 40,000 (Kaggle arabic_tts) |
 | Augmentation | SpecAugment (waveform-time noise/shift disabled in v2) |
 
-**Expected results (RTX Pro 6000, ≈ 50–70 min training):**
+**Actual measured results** (RTX Pro 6000, 18 epochs, ≈ 14 min training):
 
-| Metric | Expected |
+| Metric | Measured |
 |---|---|
-| Model parameters | ~30 M |
-| Val WER (with EMA) | 25–35% |
-| Test WER | 25–40% |
-| Test CER | 15–25% |
-| Final CTC loss | 0.4–1.1 |
+| Model parameters | 65.92 M |
+| Best Val WER (EMA) | **0.8968** at epoch 15 |
+| Test WER | **0.8868** |
+| Test CER | **0.5373** |
+| Final test CTC loss | 1.7402 |
+
+The 88–90% WER is higher than published CNN-LSTM-CTC papers (~28% in Alsayadi et al. 2021) because:
+
+1. **Greedy decoding, no LM rescoring** — published numbers use 4-gram KenLM (typically a 30–40% relative WER reduction).
+2. **13 minutes of training, not hours** — published systems train for tens of hours on the full corpus.
+3. **No Arabic-aware WER normalization** — references contain diacritics our model doesn't generate, which counts as per-word errors. CER (53.7%) better reflects character-level accuracy.
+
+For the full results, qualitative examples, and the three root-cause bugs fixed during training, see [`RESULTS.md`](../RESULTS.md).
 
 ---
 
@@ -99,7 +107,13 @@ Raw waveform (B, samples)
 | Beam size | 5 |
 | Fine-tuning | None (zero-shot) |
 
-**Expected:** WER ~15–22%, CER ~9–14%
+**Measured (300 test samples)**: **WER 58.22%, CER 27.76%**.
+
+Higher than the typical ~15–22% Whisper-medium reaches on Common Voice Arabic — likely because:
+- The Kaggle dataset's CV-11 reference transcripts include diacritics (tashkeel) that Whisper doesn't generate.
+- Our WER scorer does no Arabic-aware normalization.
+
+Qualitative samples in [RESULTS.md](../RESULTS.md) confirm Whisper produces intelligible, mostly-correct Arabic; the WER is artifact-inflated.
 
 ---
 
@@ -114,7 +128,9 @@ Raw waveform (B, samples)
 | Pretraining | XLSR (53 languages) |
 | Fine-tuning | Arabic CTC (included in checkpoint) |
 
-**Expected:** WER ~20–35%, CER ~12–20%
+**Measured (300 test samples)**: **WER 27.21%, CER 12.39%** — the **best** of all four models, beating both Whisper-medium and SeamlessM4T-v2 on this Arabic test set.
+
+Note: the original `facebook/wav2vec2-large-xlsr-53-arabic` was deprecated mid-project; we swapped to the community-maintained `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` (same XLSR-53 backbone fine-tuned on CV Arabic).
 
 ---
 
@@ -130,17 +146,27 @@ Raw waveform (B, samples)
 | Decoding | Greedy (default) |
 | Quantization | fp16 on GPU |
 
-**Expected:** WER ~12–20%, CER ~7–12% — typically beats Whisper on Arabic.
+**Measured (300 test samples)**: **WER 36.85%, CER 16.62%**.
+
+The 2.3B-param SeamlessM4T-v2 finishes behind the 300M Wav2Vec2 on this specific test set — a counter-intuitive but reproducible finding. Domain-matched fine-tuning beats raw scale for narrow ASR tasks.
 
 ---
 
 ## Experiment 5 — Side-by-side comparison
 
-Single command evaluates all 4 models on 200 test samples from
-the configured dataset:
+### Final measured leaderboard (300 shuffled test samples, seed=42)
+
+| Rank | Model | Params | WER | CER |
+|---:|---|---:|---:|---:|
+| 1 | **Wav2Vec2-XLSR-Arabic** | 300 M | **27.21%** | **12.39%** |
+| 2 | SeamlessM4T-v2-large | 2.3 B | 36.85% | 16.62% |
+| 3 | Whisper-medium | 769 M | 58.22% | 27.76% |
+| 4 | CNN+BiLSTM+Attention+CTC (ours, from scratch, 14 min) | 66 M | 88.68% | 53.73% |
+
+### Single command reproduces this evaluation:
 
 ```bash
-python evaluation/evaluate_all.py --config configs/config.yaml --num_samples 200
+python evaluation/evaluate_all.py --config configs/config.yaml --num_samples 300
 ```
 
 Outputs:

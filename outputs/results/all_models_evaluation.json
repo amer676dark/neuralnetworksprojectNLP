@@ -1,0 +1,54 @@
+{
+  "dataset": "Kaggle arabic_tts (Common Voice 11 Arabic subset)",
+  "num_test_samples": 300,
+  "shuffle_seed": 42,
+  "metrics_note": "Greedy/argmax decoding, no language-model rescoring, no Arabic-aware text normalization (diacritics + alif variants count as character mismatches in WER).",
+  "wav2vec": {
+    "model": "Wav2Vec2-XLSR-Arabic",
+    "hf_id": "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
+    "params_m": 300,
+    "wer": 0.2721,
+    "cer": 0.1239,
+    "mean_sample_wer": 0.2821,
+    "std_sample_wer": 0.3585,
+    "min_wer": 0.0000,
+    "max_wer": 1.0000
+  },
+  "seamless_m4t": {
+    "model": "SeamlessM4T-v2",
+    "hf_id": "facebook/seamless-m4t-v2-large",
+    "params_m": 2300,
+    "wer": 0.3685,
+    "cer": 0.1662,
+    "mean_sample_wer": 0.3604,
+    "std_sample_wer": 0.3909,
+    "min_wer": 0.0000,
+    "max_wer": 2.0000
+  },
+  "whisper": {
+    "model": "Whisper-medium",
+    "hf_id": "openai/whisper-medium",
+    "params_m": 769,
+    "wer": 0.5822,
+    "cer": 0.2776,
+    "mean_sample_wer": 0.5734,
+    "std_sample_wer": 0.4303,
+    "min_wer": 0.0000,
+    "max_wer": 2.3333
+  },
+  "cnn_lstm": {
+    "model": "CNN+BiLSTM+Attention+CTC (ours, from scratch)",
+    "params_m": 66,
+    "training_samples": 40000,
+    "training_epochs": 18,
+    "training_time_minutes": 13.5,
+    "wer": 0.8868,
+    "cer": 0.5373,
+    "mean_sample_wer": 0.8482,
+    "std_sample_wer": 0.2716,
+    "min_wer": 0.0000,
+    "max_wer": 1.5000,
+    "test_loss": 1.7402,
+    "best_val_wer": 0.8968
+  }
+}
