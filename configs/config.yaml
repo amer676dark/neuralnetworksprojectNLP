@@ -15,8 +15,8 @@ data:
 
   sample_rate: 16000
   max_duration: 10       # seconds — clips longer than this are skipped
-  max_train_samples: 20000   # 20k is the sweet spot on a 96GB GPU
-  max_eval_samples: 500
+  max_train_samples: 40000   # 40k for the scaled-up training run on RTX Pro 6000
+  max_eval_samples: 1000
   processed_dir: "./data/processed"
 
 audio:
@@ -34,18 +34,18 @@ cnn_lstm:
   cnn_channels: [64, 128, 256]
   cnn_kernel_size: 3
   cnn_dropout: 0.15
-  # BiLSTM — bigger hidden + extra layer (96GB VRAM allows this comfortably)
-  lstm_hidden_size: 768
-  lstm_num_layers: 4
+  # BiLSTM — beefier hidden + extra layer (96GB VRAM allows this comfortably)
+  lstm_hidden_size: 1024
+  lstm_num_layers: 5
   lstm_dropout: 0.3
   # Attention
   attention_heads: 8
   # SpecAugment
   spec_augment: true
   # Training
-  batch_size: 64           # was 16 — RTX Pro 6000 fits this easily
+  batch_size: 64           # RTX Pro 6000 fits this easily
   learning_rate: 0.0005    # slightly higher to match bigger batch
-  num_epochs: 50
+  num_epochs: 60
   gradient_clip: 5.0
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
 
@@ -97,7 +97,7 @@ evaluation:
   metrics: ["wer", "cer"]
   results_dir: "./outputs/results"
   log_dir: "./outputs/logs"
-  num_test_samples: 200
+  num_test_samples: 300
 
 demo:
   server_port: 7860
