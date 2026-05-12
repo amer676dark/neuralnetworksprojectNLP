@@ -53,7 +53,7 @@ cnn_lstm:
   # Infra knobs
   num_workers: 24            # 32-core box — keep GPU fed
   amp: true                  # bf16 autocast on Blackwell tensor cores
-  compile: true              # torch.compile (reduce-overhead) on first epoch
+  compile: false             # torch.compile + torchaudio SpecAugment is unstable; safer off
   ema_decay: 0.999           # EMA shadow weights used for validation + final eval
   seed: 1337                 # reproducibility
   return_mode: "waveform"    # dataset returns raw audio; model runs GPU mel
