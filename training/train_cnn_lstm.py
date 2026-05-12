@@ -83,10 +83,12 @@ def train_one_epoch(
     scheduler,
     device,
     grad_clip: float = 5.0,
+    amp: bool = True,
 ) -> float:
     model.train()
     total_loss = 0.0
     num_batches = 0
+    use_amp = amp and device.type == "cuda"
 
     pbar = tqdm(loader, desc="  Train", leave=False)
     for batch in pbar:
@@ -100,15 +102,15 @@ def train_one_epoch(
 
         optimizer.zero_grad()
 
-        log_probs = model(inp)  # (B, T, V)
+        # Forward in bf16 autocast (CTC loss done in fp32 for stability)
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+            log_probs = model(inp)  # (B, T, V)
 
-        # CTC requires input_lengths in time-steps (T after CNN)
-        # T_out = T_in (no time reduction in our CNN)
+        log_probs_fp32 = log_probs.float() if use_amp else log_probs
         ctc_input_lengths = torch.full(
-            (inp.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
+            (inp.shape[0],), log_probs_fp32.shape[1], dtype=torch.long, device=device
         )
-
-        loss = model.ctc_loss(log_probs, tokens, ctc_input_lengths, target_lengths)
+        loss = model.ctc_loss(log_probs_fp32, tokens, ctc_input_lengths, target_lengths)
 
         if not torch.isfinite(loss):
             continue
@@ -127,12 +129,13 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, vocab, max_batches: int = 50) -> tuple:
+def evaluate(model, loader, device, vocab, max_batches: int = 50, amp: bool = True) -> tuple:
     model.eval()
     total_loss = 0.0
     num_batches = 0
     all_refs, all_hyps = [], []
     idx2char = {v: k for k, v in vocab.items()}
+    use_amp = amp and device.type == "cuda"
 
     for i, batch in enumerate(tqdm(loader, desc="  Eval ", leave=False)):
         if i >= max_batches:
@@ -146,18 +149,20 @@ def evaluate(model, loader, device, vocab, max_batches: int = 50) -> tuple:
         target_lengths = batch["target_lengths"].to(device, non_blocking=True)
         transcripts = batch["transcripts"]
 
-        log_probs = model(inp)
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+            log_probs = model(inp)
+        log_probs_fp32 = log_probs.float() if use_amp else log_probs
         ctc_input_lengths = torch.full(
-            (inp.shape[0],), log_probs.shape[1], dtype=torch.long, device=device
+            (inp.shape[0],), log_probs_fp32.shape[1], dtype=torch.long, device=device
         )
-        loss = model.ctc_loss(log_probs, tokens, ctc_input_lengths, target_lengths)
+        loss = model.ctc_loss(log_probs_fp32, tokens, ctc_input_lengths, target_lengths)
 
         if torch.isfinite(loss):
             total_loss += loss.item()
             num_batches += 1
 
-        # Greedy decode
-        decoded_ids = model.greedy_decode(log_probs)
+        # Greedy decode (use fp32 log_probs)
+        decoded_ids = model.greedy_decode(log_probs_fp32)
         for ids, ref in zip(decoded_ids, transcripts):
             hyp = "".join(idx2char.get(i, "") for i in ids if i not in {0, 2, 3})
             all_refs.append(ref)
@@ -206,12 +211,16 @@ def train(config_path: str, resume: str = None) -> None:
     train_losses, val_losses = [], []
     train_wers, val_wers = [], []
 
-    print(f"\nStarting training for {cfg['num_epochs']} epochs...")
+    amp_enabled = bool(cfg.get("amp", True))
+    print(f"\nStarting training for {cfg['num_epochs']} epochs (AMP bf16: {amp_enabled})...")
     for epoch in range(start_epoch, cfg["num_epochs"] + 1):
         print(f"\nEpoch [{epoch}/{cfg['num_epochs']}]")
 
-        train_loss = train_one_epoch(model, train_loader, optimizer, scheduler, device, cfg["gradient_clip"])
-        val_loss, val_wer = evaluate(model, val_loader, device, vocab)
+        train_loss = train_one_epoch(
+            model, train_loader, optimizer, scheduler, device,
+            cfg["gradient_clip"], amp=amp_enabled,
+        )
+        val_loss, val_wer = evaluate(model, val_loader, device, vocab, amp=amp_enabled)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
@@ -231,7 +240,7 @@ def train(config_path: str, resume: str = None) -> None:
 
     # Final test evaluation
     print("\nRunning final test evaluation...")
-    test_loss, test_wer = evaluate(model, test_loader, device, vocab, max_batches=200)
+    test_loss, test_wer = evaluate(model, test_loader, device, vocab, max_batches=200, amp=amp_enabled)
     print(f"  Test Loss: {test_loss:.4f} | Test WER: {test_wer:.4f}")
 
     # Save results

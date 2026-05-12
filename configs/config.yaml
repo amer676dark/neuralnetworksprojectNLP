@@ -45,8 +45,9 @@ cnn_lstm:
   # Training
   batch_size: 64           # RTX Pro 6000 fits this easily
   learning_rate: 0.0005    # slightly higher to match bigger batch
-  num_epochs: 60
+  num_epochs: 30           # AMP bf16 + GPU mel — 30 ep is plenty (loss drops fast)
   num_workers: 24          # 32-core box — keep GPU fed
+  amp: true                # bf16 autocast on Blackwell tensor cores
   gradient_clip: 5.0
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
 
