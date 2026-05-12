@@ -49,10 +49,10 @@ class SpecAugment(nn.Module):
 
     def __init__(
         self,
-        freq_mask_param: int = 27,
-        time_mask_param: int = 25,    # was 100; scaled for 4x subsampling
-        n_freq_masks: int = 2,
-        n_time_masks: int = 2,
+        freq_mask_param: int = 15,    # was 27 — gentler for early epochs
+        time_mask_param: int = 20,    # 4x-subsampled domain
+        n_freq_masks: int = 1,
+        n_time_masks: int = 1,
     ):
         super().__init__()
         self.freq_masks = nn.ModuleList(
@@ -247,11 +247,13 @@ class CNNLSTMASR(nn.Module):
         """Accepts either raw waveform (B, samples) or pre-computed log-mel (B, 1, freq, T)."""
         # 1) GPU mel extraction if we got raw waveform
         if x.dim() == 2:
-            mel = self.mel_spec(x)            # (B, n_mels, T)
-            mel = self.amp_to_db(mel)         # log-mel in dB
-            mean = mel.mean(dim=(-1, -2), keepdim=True)
-            std  = mel.std(dim=(-1, -2), keepdim=True).clamp_min(1e-8)
-            mel  = (mel - mean) / std
+            mel = self.mel_spec(x)            # (B, n_mels, T) — power spectrogram
+            mel = self.amp_to_db(mel)         # log-mel in dB, roughly [-80, 0]
+            # Fixed, padding-invariant normalization (Whisper-style).
+            # Per-sample mean/std would include the padded -80 dB region and
+            # squash the real-audio dynamic range; a fixed linear map preserves
+            # the signal-to-noise ratio for real audio regardless of padding.
+            mel = (mel + 40.0) / 20.0         # roughly [-2, 2] for typical speech
             x = mel.unsqueeze(1)              # (B, 1, n_mels, T)
 
         # 2) SpecAugment in the input domain (before subsampling)
