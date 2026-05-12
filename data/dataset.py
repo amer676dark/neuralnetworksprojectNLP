@@ -212,23 +212,56 @@ def load_kaggle_arabic_tts(
         raise FileNotFoundError(f"No metadata.csv under {data_dir}")
 
     samples = []
-    # LJSpeech-style separators can be | or , — try both
+    # LJSpeech-style separators can be | or , — try both.
+    # Some Kaggle releases of arabic_tts put the transcript FIRST and filename SECOND,
+    # others do the opposite. We auto-detect which column is the filename.
+    def _looks_like_wav(s: str) -> bool:
+        s = s.strip().strip('"').strip("'")
+        return s.endswith(".wav") or s.startswith("common_voice") or (len(s) < 80 and " " not in s)
+
+    skipped_missing = 0
     with open(meta_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("|") if "|" in line else line.split(",", 1)
+            # Try | first (LJSpeech standard), fall back to comma
+            if "|" in line:
+                parts = [p.strip() for p in line.split("|")]
+            else:
+                parts = [p.strip() for p in line.split(",", 1)]
             if len(parts) < 2:
                 continue
-            fname, text = parts[0].strip(), parts[1].strip()
-            # Strip wrapping quotes
-            text = text.strip('"').strip("'")
+            a, b = parts[0], parts[1]
+            # Auto-detect column order — filename is the one that "looks like a wav"
+            if _looks_like_wav(a) and not _looks_like_wav(b):
+                fname, text = a, b
+            elif _looks_like_wav(b) and not _looks_like_wav(a):
+                fname, text = b, a
+            else:
+                # Default: assume LJSpeech order (filename, text)
+                fname, text = a, b
+            # Strip wrapping quotes from both fields
+            fname = fname.strip('"').strip("'")
+            text  = text.strip('"').strip("'")
+            # Some variants of metadata-wav.csv prefix the filename with "wavs/"
+            if fname.startswith("wavs/") or fname.startswith("wavs\\"):
+                fname = fname.split("/", 1)[-1].split("\\", 1)[-1]
+            if not fname or not text:
+                continue
             wav_path = wav_dir / fname
             if not wav_path.suffix:
                 wav_path = wav_path.with_suffix(".wav")
-            if wav_path.exists() and text:
-                samples.append({"path": str(wav_path), "sentence": text})
+            try:
+                if wav_path.exists():
+                    samples.append({"path": str(wav_path), "sentence": text})
+                else:
+                    skipped_missing += 1
+            except OSError:
+                # File-name-too-long etc. — skip the row
+                skipped_missing += 1
+    if skipped_missing:
+        print(f"  (skipped {skipped_missing} rows whose wav file was not found)")
 
     if not samples:
         raise ValueError(
