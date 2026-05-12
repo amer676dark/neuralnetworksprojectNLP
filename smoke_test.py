@@ -15,6 +15,7 @@ Run:
 If this passes locally, you can confidently rent a GPU and run training.
 """
 
+import json
 import sys
 import traceback
 from pathlib import Path
@@ -69,18 +70,27 @@ def main():
     print(f"  waveform: {wav.shape}  mel: {mel.shape}")
     assert mel.shape[0] == cfg["audio"]["n_mels"]
 
-    section("4. Build CNN+LSTM model and run forward")
-    vocab_size = 60  # arbitrary — real vocab size comes from data
-    model = build_model(vocab_size, cfg)
+    section("4. Build CNN+LSTM model and run forward (CPU)")
+    # Use a tiny override locally so the test doesn't allocate hundreds of MB
+    light_cfg = json.loads(json.dumps(cfg))  # deep copy via JSON
+    light_cfg["cnn_lstm"]["cnn_channels"] = [16, 32, 64]
+    light_cfg["cnn_lstm"]["lstm_hidden_size"] = 64
+    light_cfg["cnn_lstm"]["lstm_num_layers"] = 1
+    light_cfg["cnn_lstm"]["attention_heads"] = 4
+    light_cfg["cnn_lstm"]["spec_augment"] = False
+    vocab_size = 60
+    model = build_model(vocab_size, light_cfg).eval()
     n_params = model.count_parameters()
-    print(f"  model built — {n_params:,} parameters")
+    print(f"  model built — {n_params:,} parameters (lightweight test variant)")
 
-    mel_t = torch.tensor(mel, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
-    # shape: (1, 1, n_mels, T)
-    log_probs = model(mel_t)
+    # Forward with a short raw waveform — exercises GPU-mel code path on CPU
+    wav_t = torch.tensor(wav, dtype=torch.float32).unsqueeze(0)  # (1, samples)
+    with torch.no_grad():
+        log_probs = model(wav_t)
     print(f"  forward OK — output shape {tuple(log_probs.shape)}")
 
     section("5. CTC loss on dummy targets")
+    # Compute valid input_lengths via the model (post-subsampling time axis)
     targets = torch.tensor([[5, 10, 15, 20, 25, 30]], dtype=torch.long)
     input_lengths = torch.tensor([log_probs.shape[1]], dtype=torch.long)
     target_lengths = torch.tensor([targets.shape[1]], dtype=torch.long)

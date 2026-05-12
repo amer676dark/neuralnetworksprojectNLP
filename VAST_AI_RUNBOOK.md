@@ -117,13 +117,13 @@ rm /tmp/asc.zip
 
 ---
 
-## 5 · Train CNN+LSTM (≈ 40–50 min)
+## 5 · Train CNN+LSTM (≈ 50–70 min)
 
-Config defaults (already in `configs/config.yaml`):
-- Dataset: `kaggle_arabic_tts`
-- 20,000 train samples, 500 eval
-- Model: 64M params (LSTM hidden=768, 4 layers, CNN channels 64/128/256)
-- Batch size: 64, 50 epochs, learning rate 5e-4
+Config defaults (already in `configs/config.yaml`) reflect the v2 architecture:
+- Dataset: `kaggle_arabic_tts` · 40,000 train, 1,000 val/test
+- Model: ~30M params · CNN with 4× time subsampling · 3-layer BiLSTM (hidden 512) · 8-head self-attention
+- Batch 96 · 25 epochs · LR 7e-4 with OneCycleLR · AMP bf16 · torch.compile · EMA decay 0.999
+- GPU-side mel extraction (no librosa on CPU)
 
 ```bash
 python training/train_cnn_lstm.py --config configs/config.yaml 2>&1 | tee outputs/logs/train.log
@@ -131,13 +131,17 @@ python training/train_cnn_lstm.py --config configs/config.yaml 2>&1 | tee output
 
 Expect:
 - "Loading Kaggle arabic_tts from data/arabic_tts (train)..."
-- "Vocab size: ~60–80"
-- "Model parameters: ~64,652,156"
-- Per-epoch tqdm with Train Loss → Val Loss → Val WER
-- "New best model saved" lines
+- "Vocab size: ~110–130"
+- "Model parameters: ~30,000,000"
+- "EMA decay: 0.999"
+- "torch.compile: reduce-overhead (compilation happens on first batch)"
+- First batch is slow (~30–60 s while torch.compile traces the graph)
+- Steady state: **≥ 5 it/s** (batch=96 → ~3.5 min/epoch)
+- Per-epoch summary lines `Train Loss / Val Loss / Val WER / elapsed`
 - Best checkpoint: `outputs/checkpoints/cnn_lstm/best_model.pt`
+- Metric history streamed to `outputs/results/cnn_lstm_history.json` every epoch
 
-**Mid-run OOM?** Drop batch_size to 32 in config.yaml and resume:
+**Mid-run OOM?** Drop `batch_size` to 64 in `configs/config.yaml` and resume:
 ```bash
 python training/train_cnn_lstm.py --config configs/config.yaml \
   --resume outputs/checkpoints/cnn_lstm/best_model.pt

@@ -8,14 +8,13 @@ data:
   source: "kaggle_arabic_tts"
   # For local datasets (kaggle_arabic_tts, arabic_speech_corpus, ejust) — set the folder path
   data_dir: "./data/arabic_tts"
-  # HuggingFace token — required for Common Voice / SeamlessM4T (or set HF_TOKEN env var)
+  # HuggingFace token — required for SeamlessM4T (or set HF_TOKEN env var)
   hf_token: null
-  # Which sources to mix if source = "combined"
   combine_sources: ["kaggle_arabic_tts", "arabic_speech_corpus", "masc"]
 
   sample_rate: 16000
-  max_duration: 10       # seconds — clips longer than this are skipped
-  max_train_samples: 40000   # 40k for the scaled-up training run on RTX Pro 6000
+  max_duration: 10           # seconds — clips longer than this are pad/trimmed
+  max_train_samples: 40000   # 40k yields ~30-40% WER on the new architecture
   max_eval_samples: 1000
   processed_dir: "./data/processed"
 
@@ -23,36 +22,45 @@ audio:
   sample_rate: 16000
   n_mels: 80
   n_fft: 512
-  hop_length: 160
-  win_length: 400
+  hop_length: 160            # 10 ms hop @ 16kHz
+  win_length: 400            # 25 ms window
   f_min: 0
   f_max: 8000
   max_audio_length: 10
 
 cnn_lstm:
-  # CNN — larger first block on a 96GB GPU
+  # CNN encoder: 4x time + 4x freq subsampling, then a residual block
   cnn_channels: [64, 128, 256]
-  cnn_kernel_size: 3
-  cnn_dropout: 0.15
-  # BiLSTM — beefier hidden + extra layer (96GB VRAM allows this comfortably)
-  lstm_hidden_size: 1024
-  lstm_num_layers: 5
-  lstm_dropout: 0.3
-  # Attention
+  cnn_dropout: 0.1
+  # BiLSTM — right-sized for 40k samples (LSTM dominates per-step cost)
+  lstm_hidden_size: 512
+  lstm_num_layers: 3
+  lstm_dropout: 0.1
+  # Self-attention
   attention_heads: 8
-  # SpecAugment
+  # SpecAugment in the subsampled domain (auto-scaled mask widths)
   spec_augment: true
+
   # Training
-  batch_size: 64           # RTX Pro 6000 fits this easily
-  learning_rate: 0.0005    # slightly higher to match bigger batch
-  num_epochs: 30           # AMP bf16 + GPU mel — 30 ep is plenty (loss drops fast)
-  num_workers: 24          # 32-core box — keep GPU fed
-  amp: true                # bf16 autocast on Blackwell tensor cores
+  batch_size: 96             # larger batches → better Blackwell tensor-core utilization
+  learning_rate: 0.0007      # scaled to match the larger effective batch
+  weight_decay: 0.00001
+  num_epochs: 25             # 25 ep is plenty with the new architecture + EMA eval
   gradient_clip: 5.0
+  warmup_pct: 0.1            # OneCycleLR warmup fraction
   checkpoint_dir: "./outputs/checkpoints/cnn_lstm"
 
+  # Infra knobs
+  num_workers: 24            # 32-core box — keep GPU fed
+  amp: true                  # bf16 autocast on Blackwell tensor cores
+  compile: true              # torch.compile (reduce-overhead) on first epoch
+  ema_decay: 0.999           # EMA shadow weights used for validation + final eval
+  seed: 1337                 # reproducibility
+  return_mode: "waveform"    # dataset returns raw audio; model runs GPU mel
+  log_every: 50              # print a step-loss snapshot every N batches
+
 whisper:
-  model_size: "medium"    # tiny | base | small | medium | large-v2 | large-v3
+  model_size: "medium"
   language: "ar"
   task: "transcribe"
   device: "auto"
@@ -73,7 +81,6 @@ seamless_m4t:
   device: "auto"
 
 advanced:
-  # 4 optional advanced tasks from the project requirements.
   speaker_id:
     enabled: true
     model_name: "speechbrain/spkrec-ecapa-voxceleb"

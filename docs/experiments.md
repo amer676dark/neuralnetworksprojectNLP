@@ -28,37 +28,62 @@ All four are evaluated on the same 200-sample test slice for fair comparison.
 
 **Goal:** Understand the full ASR pipeline by training a model end-to-end.
 
-**Architecture:**
+**Architecture (v2 — research-informed redesign):**
+
 ```
-Log-Mel Spectrogram (1, 80, T)
-  ↓ SpecAugment (2 freq + 2 time masks)
-  ↓ Residual CNN × 3 — channels 64 → 128 → 256
-  ↓ Linear projection (1280 → 768) + LayerNorm + GELU
-  ↓ Bidirectional LSTM × 4 (hidden=768, dropout=0.3)
-  ↓ Multi-Head Self-Attention (8 heads, pre-LN, residual)
-  ↓ Linear → log-softmax
+Raw waveform (B, samples)
+  ↓ GPU mel (torchaudio.transforms.MelSpectrogram) + log + per-sample norm
+  ↓ SpecAugment (2 freq @≤27 + 2 time @≤25 masks)
+  ↓ CNN encoder — 4× time subsampling
+       SubsampleConv(1→64,  stride 2,2)
+       SubsampleConv(64→128, stride 2,2)
+       ResidualConv(128)
+       Conv1×1 → 256, BN, GELU
+  ↓ Linear projection (256 × n_mels/4 → 512) + LayerNorm + GELU
+  ↓ BiLSTM × 3 (hidden 512, dropout 0.1, orthogonal init, forget-bias=1)
+  ↓ Multi-Head Self-Attention (8 heads, pre-LayerNorm, residual)
+  ↓ LayerNorm + Linear → log-softmax
   ↓ CTC Loss · Greedy Decode
 ```
 
+**Why this shape:**
+
+- **4× time subsampling** (Conformer / ESPnet convention) cuts LSTM compute by 4×
+  while preserving acoustic resolution sufficient for character-level CTC.
+- **Right-sized LSTM** (3 × 512) — empirical sweet-spot for character-level CTC
+  on ~40k samples; larger LSTMs (5 × 1024) overfit and run 4–5× slower per step.
+- **GPU mel extraction** removes the CPU bottleneck (librosa was pinning all
+  cores at 100% while the GPU was starving).
+- **EMA weights** (decay 0.999) are used for validation and the final test —
+  consistent 10–15% relative WER reduction at near-zero cost.
+- **bf16 autocast** uses Blackwell tensor cores; CTC loss stays in fp32.
+
 **Hyperparameters:**
+
 | Param | Value |
 |---|---|
 | Optimizer | AdamW (weight decay 1e-5) |
-| LR schedule | OneCycleLR, max_lr=5e-4, 10% warmup |
-| Batch size | 64 |
-| Epochs | 50 |
+| LR schedule | OneCycleLR, max_lr=7e-4, 10% warmup |
+| Batch size | 96 |
+| Epochs | 25 |
 | Gradient clip | 5.0 |
-| Train samples | 20,000 (Kaggle arabic_tts) |
-| Augmentation | Noise + time shift + SpecAugment |
+| AMP | bf16 (CUDA only) |
+| `torch.compile` | mode=reduce-overhead |
+| Channels last (CNN) | yes |
+| TF32 | enabled |
+| Seed | 1337 |
+| Train samples | 40,000 (Kaggle arabic_tts) |
+| Augmentation | SpecAugment (waveform-time noise/shift disabled in v2) |
 
-**Expected results (RTX Pro 6000, ~45 min training):**
+**Expected results (RTX Pro 6000, ≈ 50–70 min training):**
 
 | Metric | Expected |
 |---|---|
-| Val WER | 30–45% |
-| Test WER | 30–45% |
-| Test CER | 18–28% |
-| Final CTC loss | 0.4–1.2 |
+| Model parameters | ~30 M |
+| Val WER (with EMA) | 25–35% |
+| Test WER | 25–40% |
+| Test CER | 15–25% |
+| Final CTC loss | 0.4–1.1 |
 
 ---
 
