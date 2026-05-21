@@ -37,7 +37,9 @@ class Wav2Vec2ASR:
 
     def __init__(
         self,
-        model_name: str = "facebook/wav2vec2-large-xlsr-53-arabic",
+        # facebook/wav2vec2-large-xlsr-53-arabic was deprecated by FAIR;
+        # using the community-maintained equivalent with same XLSR-53 backbone.
+        model_name: str = "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
         device: Optional[str] = None,
     ):
         self.model_name = model_name
